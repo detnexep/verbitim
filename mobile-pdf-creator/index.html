@@ -1,4 +1,4 @@
- <!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -7,28 +7,21 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="description" content="Professional PDF Creator - Create high quality PDFs on your phone">
-    
+
     <title>PDF Creator Pro</title>
-    
+
     <!-- PWA Manifest -->
     <link rel="manifest" href="manifest.json">
-    
+
     <!-- Apple Touch Icon -->
     <link rel="apple-touch-icon" href="icons/icon-192.png">
- 
+
     <link rel="stylesheet" href="./css/style.css">
-    
+
     <!-- PDF Libraries -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/heic2any@0.0.3/dist/heic2any.min.js"></script>
 
-    <!-- Local Scripts - Using relative paths -->
-    <script src="./js/file-handler.js"></script>
-    <script src="./js/image-processor.js"></script>
-    <script src="./js/pdf-engine.js"></script>
-    <script src="./js/app.js"></script>
-    
     <!-- HEIC Support -->
     <script src="https://cdn.jsdelivr.net/npm/heic2any@0.0.3/dist/heic2any.min.js"></script>
 </head>
@@ -58,7 +51,7 @@
                         <line x1="12" y1="3" x2="12" y2="15"/>
                     </svg>
                     <h2>Tap to add files</h2>
-                    <p>Images, PDFs, Office docs, or screenshots</p>
+                    <p>Images or PDFs · hold to use camera</p>
                     <button class="btn btn-primary" id="addFilesBtn">
                         <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
                             <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
@@ -219,16 +212,16 @@
         </nav>
     </div>
 
-    <!-- Hidden file input -->
-    <input type="file" id="fileInput" accept="image/*,.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.rtf,.svg,.heic,.heif" multiple hidden>
-    
+    <!-- Hidden file input: only formats the PDF engine can actually embed -->
+    <input type="file" id="fileInput" accept="image/*,.pdf,.heic,.heif" multiple hidden>
+
     <!-- Capture input for camera -->
     <input type="file" id="cameraInput" accept="image/*" capture="environment" hidden>
 
-    <!-- Scripts -->
-    <script src="js/file-handler.js"></script>
-    <script src="js/image-processor.js"></script>
-    <script src="js/pdf-engine.js"></script>
-    <script src="js/app.js"></script>
+    <!-- Scripts: local scripts load ONCE, in dependency order, right before </body> -->
+    <script src="./js/file-handler.js"></script>
+    <script src="./js/image-processor.js"></script>
+    <script src="./js/pdf-engine.js"></script>
+    <script src="./js/app.js"></script>
 </body>
 </html>
