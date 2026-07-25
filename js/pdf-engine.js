@@ -16,7 +16,6 @@ class PDFEngine {
         this.watermark = null;
         this.metadata = {};
 
-        // PDFLib page sizes (in points)
         this.PAGE_SIZES = {
             a4: [595.28, 841.89],
             letter: [612, 792],
@@ -25,50 +24,54 @@ class PDFEngine {
         };
     }
 
+    /**
+     * Returns { pdfBytes, results }. results is an array of
+     * { name, size, ok, label } describing exactly what happened to
+     * each input file - this feeds the live processing log and the
+     * final build report in the UI.
+     */
     async createPDF(files, progressCallback) {
         const { PDFDocument, StandardFonts } = PDFLib;
         this.pdfDoc = await PDFDocument.create();
         this.font = await this.pdfDoc.embedFont(StandardFonts.Helvetica);
 
-        // Set metadata
         if (this.metadata.title) this.pdfDoc.setTitle(this.metadata.title);
         if (this.metadata.author) this.pdfDoc.setAuthor(this.metadata.author);
         this.pdfDoc.setCreator('PDF Creator Pro');
         this.pdfDoc.setProducer('PDF Creator Pro');
 
+        const results = [];
         let processed = 0;
         const total = files.length;
 
         for (const file of files) {
             if (progressCallback) {
-                progressCallback(
-                    Math.round((processed / total) * 90),
-                    `Processing ${file.name}...`
-                );
+                progressCallback(Math.round((processed / total) * 90), `Processing ${file.name}...`, null);
             }
 
+            let entry;
             try {
-                await this.addFileToPDF(file);
+                const label = await this.addFileToPDF(file);
+                entry = { name: file.name, size: file.size, ok: true, label };
             } catch (error) {
                 console.error(`Error processing ${file.name}:`, error);
-                // Continue with next file
+                entry = { name: file.name, size: file.size, ok: false, label: error.message || 'Failed to process' };
             }
+            results.push(entry);
 
             processed++;
+            if (progressCallback) {
+                progressCallback(Math.round((processed / total) * 90), `Processed ${processed} of ${total}`, entry);
+            }
         }
 
-        if (progressCallback) {
-            progressCallback(95, 'Finalizing PDF...');
-        }
+        if (progressCallback) progressCallback(95, 'Finalizing PDF...', null);
 
-        // Save PDF
         const pdfBytes = await this.pdfDoc.save();
 
-        if (progressCallback) {
-            progressCallback(100, 'PDF created successfully!');
-        }
+        if (progressCallback) progressCallback(100, 'PDF created successfully!', null);
 
-        return pdfBytes;
+        return { pdfBytes, results };
     }
 
     async addFileToPDF(file) {
@@ -77,36 +80,29 @@ class PDFEngine {
         switch (extension) {
             case 'jpg':
             case 'jpeg':
-                await this.addJPEG(file);
-                break;
+                return await this.addJPEG(file);
             case 'png':
-                await this.addPNG(file);
-                break;
+                return await this.addPNG(file);
             case 'webp':
-                await this.addWebP(file);
-                break;
+                return await this.addWebP(file);
             case 'heic':
             case 'heif':
-                await this.addHEIC(file);
-                break;
+                return await this.addHEIC(file);
             case 'svg':
-                await this.addSVG(file);
-                break;
+                return await this.addSVG(file);
             case 'pdf':
-                await this.addExistingPDF(file);
-                break;
+                return await this.addExistingPDF(file);
             default:
-                await this.addImageGeneric(file);
+                return await this.addImageGeneric(file);
         }
     }
 
     async addJPEG(file) {
         const buffer = await file.arrayBuffer();
 
-        // Always check EXIF orientation first - a JPEG straight off a phone
-        // camera is very often stored unrotated with an orientation tag,
-        // and embedding the raw bytes directly (the old "fast path") would
-        // silently ignore that tag, since PDF viewers don't read it.
+        // Always check EXIF orientation first - embedding raw bytes
+        // directly would silently skip any needed rotation, since PDF
+        // viewers don't read a JPEG's internal EXIF orientation tag.
         const orientation = await this.getExifOrientation(buffer);
         const needsRotation = orientation !== 1;
         const canEmbedDirect = this.quality === 'maximum' && !needsRotation && !this.compressImages;
@@ -114,14 +110,16 @@ class PDFEngine {
         if (canEmbedDirect) {
             const image = await this.pdfDoc.embedJpg(buffer);
             await this.addPageWithImage(image, image.width, image.height, 'JPEG (lossless)');
-        } else {
-            const processedBuffer = await this.processImage(buffer, 'image/jpeg', orientation);
-            const image = await this.pdfDoc.embedJpg(processedBuffer);
-            const label = needsRotation
-                ? (this.compressImages ? 'JPEG (rotated, compressed)' : 'JPEG (rotated)')
-                : (this.compressImages ? 'JPEG (compressed)' : 'JPEG');
-            await this.addPageWithImage(image, image.width, image.height, label);
+            return 'JPEG · embedded as-is';
         }
+
+        const processedBuffer = await this.processImage(buffer, 'image/jpeg', orientation);
+        const image = await this.pdfDoc.embedJpg(processedBuffer);
+        const label = needsRotation
+            ? (this.compressImages ? 'JPEG · rotated + compressed' : 'JPEG · rotated')
+            : (this.compressImages ? 'JPEG · compressed' : 'JPEG · re-encoded');
+        await this.addPageWithImage(image, image.width, image.height, label);
+        return label;
     }
 
     async addPNG(file) {
@@ -130,30 +128,33 @@ class PDFEngine {
         if (this.quality === 'maximum' && !this.compressImages) {
             const image = await this.pdfDoc.embedPng(buffer);
             await this.addPageWithImage(image, image.width, image.height, 'PNG (lossless)');
-        } else if (this.compressImages) {
+            return 'PNG · embedded as-is';
+        }
+
+        if (this.compressImages) {
             // Converting to JPEG is the only way to meaningfully shrink a
-            // PNG - this does drop transparency, which is an unavoidable
-            // trade-off of "compress this image".
+            // PNG - unavoidably drops transparency.
             const processedBuffer = await this.processImage(buffer, 'image/jpeg', 1);
             const image = await this.pdfDoc.embedJpg(processedBuffer);
             await this.addPageWithImage(image, image.width, image.height, 'PNG → JPEG (compressed)');
-        } else {
-            const processedBuffer = await this.processImage(buffer, 'image/png', 1);
-            const image = await this.pdfDoc.embedPng(processedBuffer);
-            await this.addPageWithImage(image, image.width, image.height, 'PNG');
+            return 'PNG · compressed to JPEG';
         }
+
+        const processedBuffer = await this.processImage(buffer, 'image/png', 1);
+        const image = await this.pdfDoc.embedPng(processedBuffer);
+        await this.addPageWithImage(image, image.width, image.height, 'PNG');
+        return 'PNG · re-encoded';
     }
 
     async addWebP(file) {
-        // Convert WebP to PNG for PDF embedding
         const buffer = await file.arrayBuffer();
         const pngBuffer = await this.convertToPNG(buffer);
         const image = await this.pdfDoc.embedPng(pngBuffer);
         await this.addPageWithImage(image, image.width, image.height, 'WebP → PNG');
+        return 'WebP · converted to PNG';
     }
 
     async addHEIC(file) {
-        // Convert HEIC using heic2any library
         try {
             const blob = await heic2any({
                 blob: file,
@@ -164,6 +165,7 @@ class PDFEngine {
             const buffer = await new Response(blob).arrayBuffer();
             const image = await this.pdfDoc.embedJpg(buffer);
             await this.addPageWithImage(image, image.width, image.height, 'HEIC → JPEG');
+            return 'HEIC · converted to JPEG';
         } catch (error) {
             console.error('HEIC conversion failed:', error);
             throw new Error('Cannot process HEIC file. Try converting to JPEG first.');
@@ -171,7 +173,6 @@ class PDFEngine {
     }
 
     async addSVG(file) {
-        // Rasterize SVG to canvas
         const svgText = await file.text();
         const canvas = await this.rasterizeSVG(svgText);
         const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
@@ -179,10 +180,10 @@ class PDFEngine {
 
         const image = await this.pdfDoc.embedPng(buffer);
         await this.addPageWithImage(image, image.width, image.height, 'SVG → PNG');
+        return 'SVG · rasterized to PNG';
     }
 
     async addImageGeneric(file) {
-        // Generic image processing
         const buffer = await file.arrayBuffer();
         const canvas = await this.createImageCanvas(buffer);
         const blob = await new Promise(resolve =>
@@ -192,13 +193,11 @@ class PDFEngine {
 
         const image = await this.pdfDoc.embedPng(pngBuffer);
         await this.addPageWithImage(image, image.width, image.height, 'Image → PNG');
+        return 'Converted to PNG';
     }
 
     /**
-     * Embed every page of an existing PDF file into the output document.
-     * Previously there was no case for 'pdf' at all, so adding a PDF
-     * silently failed (it fell through to addImageGeneric, which tried
-     * to load the PDF bytes as an <img> and always failed).
+     * Embed every page of an existing PDF into the output document.
      */
     async addExistingPDF(file) {
         const { PDFDocument } = PDFLib;
@@ -212,53 +211,37 @@ class PDFEngine {
             const { width, height } = page.getSize();
             this.decoratePage(page, width, height);
         });
+
+        return `PDF · ${pageIndices.length} page${pageIndices.length === 1 ? '' : 's'} merged`;
     }
 
     async addPageWithImage(image, imgWidth, imgHeight, label) {
         let pageWidth, pageHeight, page;
 
         if (this.pageSize === 'original') {
-            // Use image dimensions
-            const pxToPt = 0.75; // 96 DPI to 72 DPI
+            const pxToPt = 0.75;
             pageWidth = imgWidth * pxToPt;
             pageHeight = imgHeight * pxToPt;
 
-            // Clamp to reasonable size
-            const maxDim = 14000; // PDF max dimension in points
+            const maxDim = 14000;
             const scale = Math.min(1, maxDim / pageWidth, maxDim / pageHeight);
             pageWidth *= scale;
             pageHeight *= scale;
 
             page = this.pdfDoc.addPage([pageWidth, pageHeight]);
-            page.drawImage(image, {
-                x: 0,
-                y: 0,
-                width: pageWidth,
-                height: pageHeight
-            });
+            page.drawImage(image, { x: 0, y: 0, width: pageWidth, height: pageHeight });
         } else {
-            // Use specified page size
             const [baseW, baseH] = this.PAGE_SIZES[this.pageSize];
 
-            // Handle orientation
             if (this.orientation === 'landscape') {
-                pageWidth = baseH;
-                pageHeight = baseW;
+                pageWidth = baseH; pageHeight = baseW;
             } else if (this.orientation === 'portrait') {
-                pageWidth = baseW;
-                pageHeight = baseH;
+                pageWidth = baseW; pageHeight = baseH;
             } else {
-                // Auto: match image aspect ratio
-                if (imgWidth > imgHeight) {
-                    pageWidth = baseH;
-                    pageHeight = baseW;
-                } else {
-                    pageWidth = baseW;
-                    pageHeight = baseH;
-                }
+                if (imgWidth > imgHeight) { pageWidth = baseH; pageHeight = baseW; }
+                else { pageWidth = baseW; pageHeight = baseH; }
             }
 
-            // Calculate image placement
             const margin = this.margin;
             const maxW = pageWidth - margin * 2;
             const maxH = pageHeight - margin * 2;
@@ -268,37 +251,21 @@ class PDFEngine {
 
             let drawW, drawH;
             if (imgAspect > pageAspect) {
-                drawW = maxW;
-                drawH = maxW / imgAspect;
+                drawW = maxW; drawH = maxW / imgAspect;
             } else {
-                drawH = maxH;
-                drawW = maxH * imgAspect;
+                drawH = maxH; drawW = maxH * imgAspect;
             }
 
-            // Center the image
             const x = (pageWidth - drawW) / 2;
             const y = (pageHeight - drawH) / 2;
 
             page = this.pdfDoc.addPage([pageWidth, pageHeight]);
-            page.drawImage(image, {
-                x, y,
-                width: drawW,
-                height: drawH
-            });
+            page.drawImage(image, { x, y, width: drawW, height: drawH });
         }
 
-        // Page numbers + watermark now apply in every page-size mode,
-        // and share one implementation with the existing-PDF path above.
         this.decoratePage(page, pageWidth, pageHeight);
     }
 
-    /**
-     * Draw page number and/or watermark on a page. Previously this only
-     * ran inside the non-"original" branch of addPageWithImage (so page
-     * numbers silently never appeared in the default "Original" page-size
-     * mode), used a plain {r,g,b} object where pdf-lib requires its rgb()
-     * helper, and never centered the text properly.
-     */
     decoratePage(page, pageWidth, pageHeight) {
         const { rgb, degrees } = PDFLib;
 
@@ -334,10 +301,8 @@ class PDFEngine {
     }
 
     async processImage(buffer, mimeType, orientation = null) {
-        // Create canvas from buffer
         const blob = new Blob([buffer], { type: mimeType });
         const url = URL.createObjectURL(blob);
-
         const img = await this.loadImage(url);
 
         if (orientation === null) {
@@ -348,17 +313,13 @@ class PDFEngine {
         const canvas = document.createElement('canvas');
         canvas.width = width;
         canvas.height = height;
-
         const ctx = canvas.getContext('2d');
 
-        // JPEG has no alpha channel - flatten transparent areas to white
-        // before drawing, otherwise they'd render as black.
         if (mimeType === 'image/jpeg') {
             ctx.fillStyle = '#FFFFFF';
             ctx.fillRect(0, 0, width, height);
         }
 
-        // Apply rotation
         ctx.save();
         this.applyOrientation(ctx, orientation, width, height);
         ctx.drawImage(img, 0, 0);
@@ -366,7 +327,6 @@ class PDFEngine {
 
         URL.revokeObjectURL(url);
 
-        // Convert back to buffer
         const quality = this.getQualityValue();
         const processedBlob = await new Promise(resolve =>
             canvas.toBlob(resolve, mimeType, quality)
@@ -383,16 +343,12 @@ class PDFEngine {
         const canvas = document.createElement('canvas');
         canvas.width = img.width;
         canvas.height = img.height;
-
         const ctx = canvas.getContext('2d');
         ctx.drawImage(img, 0, 0);
 
         URL.revokeObjectURL(url);
 
-        const pngBlob = await new Promise(resolve =>
-            canvas.toBlob(resolve, 'image/png')
-        );
-
+        const pngBlob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
         return await pngBlob.arrayBuffer();
     }
 
@@ -404,7 +360,6 @@ class PDFEngine {
         const canvas = document.createElement('canvas');
         canvas.width = img.width;
         canvas.height = img.height;
-
         const ctx = canvas.getContext('2d');
         ctx.drawImage(img, 0, 0);
 
@@ -413,18 +368,14 @@ class PDFEngine {
     }
 
     async rasterizeSVG(svgText) {
-        // Create SVG blob
         const blob = new Blob([svgText], { type: 'image/svg+xml' });
         const url = URL.createObjectURL(blob);
-
         const img = await this.loadImage(url);
 
-        // Render at 2x for quality
         const scale = 2;
         const canvas = document.createElement('canvas');
         canvas.width = (img.width || 800) * scale;
         canvas.height = (img.height || 600) * scale;
-
         const ctx = canvas.getContext('2d');
         ctx.scale(scale, scale);
         ctx.drawImage(img, 0, 0);
@@ -442,21 +393,16 @@ class PDFEngine {
         });
     }
 
-    /**
-     * Real EXIF orientation reader (previously this always returned 1 -
-     * a "simplified" placeholder that never actually parsed anything, so
-     * every rotated phone photo silently rendered sideways).
-     */
     async getExifOrientation(buffer) {
         try {
             const view = new DataView(buffer);
-            if (view.getUint16(0, false) !== 0xFFD8) return 1; // Not a JPEG
+            if (view.getUint16(0, false) !== 0xFFD8) return 1;
 
             let offset = 2;
             const length = view.byteLength;
 
             while (offset < length) {
-                if (view.getUint8(offset) !== 0xFF) return 1; // Invalid marker
+                if (view.getUint8(offset) !== 0xFF) return 1;
                 const marker = view.getUint8(offset + 1);
 
                 if (marker === 0xE1) {
@@ -466,7 +412,7 @@ class PDFEngine {
                 offset += 2 + view.getUint16(offset + 2, false);
             }
 
-            return 1; // No EXIF found
+            return 1;
         } catch (error) {
             console.warn('Error reading EXIF:', error);
             return 1;
@@ -475,7 +421,7 @@ class PDFEngine {
 
     parseExifOrientation(view, offset) {
         const exifHeader = view.getUint32(offset, false);
-        if (exifHeader !== 0x45786966) return 1; // 'Exif'
+        if (exifHeader !== 0x45786966) return 1;
 
         const tiffOffset = offset + 6;
         const isBigEndian = view.getUint16(tiffOffset, false) === 0x4D4D;
