@@ -31,6 +31,7 @@ class PDFCreatorApp {
         this.fileList = document.getElementById('fileList');
         this.fileItems = document.getElementById('fileItems');
         this.fileCount = document.getElementById('fileCount');
+        this.fileListTotal = document.getElementById('fileListTotal');
         this.clearAllBtn = document.getElementById('clearAllBtn');
 
         this.settings = document.getElementById('settings');
@@ -51,69 +52,80 @@ class PDFCreatorApp {
         this.progressTitle = document.getElementById('progressTitle');
         this.progressMessage = document.getElementById('progressMessage');
         this.progressFill = document.getElementById('progressFill');
+        this.progressLog = document.getElementById('progressLog');
         this.cancelBtn = document.getElementById('cancelBtn');
 
         this.resultSection = document.getElementById('resultSection');
-        this.resultMessage = document.getElementById('resultMessage');
+        this.reportInputCount = document.getElementById('reportInputCount');
+        this.reportInputSize = document.getElementById('reportInputSize');
+        this.reportOutputSize = document.getElementById('reportOutputSize');
+        this.reportList = document.getElementById('reportList');
         this.downloadBtn = document.getElementById('downloadBtn');
         this.shareBtn = document.getElementById('shareBtn');
 
         this.navItems = document.querySelectorAll('.nav-item');
+
+        this.menuButton = document.getElementById('menuButton');
+        this.drawer = document.getElementById('drawer');
+        this.drawerOverlay = document.getElementById('drawerOverlay');
+        this.drawerClose = document.getElementById('drawerClose');
+        this.clearHistoryBtn = document.getElementById('clearHistoryBtn');
     }
 
     setupEventListeners() {
-        // File selection
         this.addFilesBtn.addEventListener('click', () => this.fileInput.click());
         this.fileInput.addEventListener('change', (e) => this.handleFiles(e.target.files));
         this.cameraInput.addEventListener('change', (e) => this.handleFiles(e.target.files));
 
-        // File list actions
         this.clearAllBtn.addEventListener('click', () => this.clearAllFiles());
 
-        // Settings chips
-        this.setupChipGroup(this.pageSizeGroup, (value) => {
-            this.pdfEngine.pageSize = value;
-        });
-        this.setupChipGroup(this.qualityGroup, (value) => {
-            this.pdfEngine.quality = value;
-        });
-        this.setupChipGroup(this.orientationGroup, (value) => {
-            this.pdfEngine.orientation = value;
-        });
+        this.setupChipGroup(this.pageSizeGroup, (value) => { this.pdfEngine.pageSize = value; });
+        this.setupChipGroup(this.qualityGroup, (value) => { this.pdfEngine.quality = value; });
+        this.setupChipGroup(this.orientationGroup, (value) => { this.pdfEngine.orientation = value; });
 
-        // Margin slider
         this.marginSlider.addEventListener('input', (e) => {
-            const value = parseInt(e.target.value);
+            const value = parseInt(e.target.value, 10);
             this.pdfEngine.margin = value;
             this.marginValue.textContent = `${value}pt`;
         });
 
-        // Advanced options
-        this.pageNumbers.addEventListener('change', (e) => {
-            this.pdfEngine.pageNumbers = e.target.checked;
-        });
-        this.compressImages.addEventListener('change', (e) => {
-            this.pdfEngine.compressImages = e.target.checked;
-        });
-        this.watermark.addEventListener('input', (e) => {
-            this.pdfEngine.watermark = e.target.value.trim() || null;
-        });
-        this.docTitle.addEventListener('input', (e) => {
-            this.pdfEngine.metadata.title = e.target.value.trim();
-        });
+        this.pageNumbers.addEventListener('change', (e) => { this.pdfEngine.pageNumbers = e.target.checked; });
+        this.compressImages.addEventListener('change', (e) => { this.pdfEngine.compressImages = e.target.checked; });
+        this.watermark.addEventListener('input', (e) => { this.pdfEngine.watermark = e.target.value.trim() || null; });
+        this.docTitle.addEventListener('input', (e) => { this.pdfEngine.metadata.title = e.target.value.trim(); });
 
-        // Create PDF
         this.createPdfBtn.addEventListener('click', () => this.createPDF());
         this.cancelBtn.addEventListener('click', () => this.cancelCreation());
 
-        // Result actions
         this.downloadBtn.addEventListener('click', () => this.downloadPDF());
         this.shareBtn.addEventListener('click', () => this.sharePDF());
 
-        // Bottom nav
         this.navItems.forEach((item) => {
             item.addEventListener('click', () => this.switchTab(item.dataset.tab));
         });
+
+        // Menu drawer - previously this button had no listener at all.
+        this.menuButton.addEventListener('click', () => this.openDrawer());
+        this.drawerClose.addEventListener('click', () => this.closeDrawer());
+        this.drawerOverlay.addEventListener('click', () => this.closeDrawer());
+        this.clearHistoryBtn.addEventListener('click', () => this.clearHistory());
+    }
+
+    openDrawer() {
+        this.drawer.hidden = false;
+        this.drawerOverlay.hidden = false;
+    }
+
+    closeDrawer() {
+        this.drawer.hidden = true;
+        this.drawerOverlay.hidden = true;
+    }
+
+    clearHistory() {
+        localStorage.removeItem('pdfHistory');
+        this.closeDrawer();
+        this.showSnackbar('History cleared');
+        if (this.currentTab === 'history') this.showHistory();
     }
 
     setupChipGroup(group, onChange) {
@@ -147,21 +159,11 @@ class PDFCreatorApp {
             this.handleFiles(e.dataTransfer.files);
         });
 
-        // Prevent the whole page from navigating away if a file is
-        // dropped outside the drop zone.
         ['dragover', 'drop'].forEach((evt) => {
             document.body.addEventListener(evt, (e) => e.preventDefault());
         });
     }
 
-    /**
-     * Hold anywhere on the drop zone to open the camera.
-     * The previous version listened for a 'long-press' event, which
-     * doesn't exist as a native DOM event and so never fired. This uses
-     * real pointer events with a timer instead. A quick tap (e.g. on the
-     * "Add Files" button inside the drop zone) cancels the timer before
-     * it completes, so it doesn't interfere with normal taps.
-     */
     setupCameraLongPress() {
         let pressTimer = null;
         const LONG_PRESS_MS = 550;
@@ -226,19 +228,25 @@ class PDFCreatorApp {
     }
 
     /**
-     * Refreshes fileItems.innerHTML from the current this.files array
-     * and rewires its listeners, WITHOUT touching section visibility.
-     * Kept separate from updateFileList() so switchTab('files') can call
-     * this to restore the real list after the History tab has
-     * temporarily replaced fileItems.innerHTML with history entries.
+     * Best-effort classification for the badge shown BEFORE processing -
+     * a quick preview of how each file will likely be handled. The real
+     * per-file outcome (which also accounts for EXIF rotation etc.) is
+     * shown in the build report after creation.
      */
+    classifyExtension(ext) {
+        if (['jpg', 'jpeg', 'png'].includes(ext)) return { text: 'LOSSLESS', cls: 'file-badge-lossless' };
+        if (ext === 'pdf') return { text: 'MERGE', cls: 'file-badge-merge' };
+        return { text: 'CONVERT', cls: 'file-badge-convert' };
+    }
+
     renderFileItemsContent() {
-        // Revoke previous thumbnail object URLs before creating new ones,
-        // otherwise every add/remove/reorder leaks one URL per image.
         this.thumbnailUrls.forEach((url) => URL.revokeObjectURL(url));
         this.thumbnailUrls = [];
 
         this.fileCount.textContent = this.files.length;
+        const totalSize = this.files.reduce((sum, f) => sum + f.size, 0);
+        this.fileListTotal.textContent = this.files.length > 0 ? this.formatFileSize(totalSize) : '';
+
         this.fileItems.innerHTML = this.files
             .map((file, index) => this.createFileItem(file, index))
             .join('');
@@ -250,15 +258,22 @@ class PDFCreatorApp {
 
         const hasFiles = this.files.length > 0;
         this.fileList.style.display = hasFiles ? 'block' : 'none';
-        this.settings.style.display = hasFiles ? 'block' : 'none';
         this.createSection.style.display = hasFiles ? 'block' : 'none';
+
+        // Settings visibility follows the active tab, not file count -
+        // it used to only show when files existed, which made the
+        // Settings tab appear completely blank if you opened it first.
+        if (this.currentTab === 'settings') {
+            this.settings.style.display = 'block';
+        }
     }
 
     createFileItem(file, index) {
         const size = this.formatFileSize(file.size);
-        const ext = file.name.split('.').pop().toUpperCase();
+        const ext = file.name.split('.').pop().toLowerCase();
+        const badge = this.classifyExtension(ext);
 
-        let thumbnailHtml = `<div class="file-thumbnail-placeholder">${ext}</div>`;
+        let thumbnailHtml = `<div class="file-thumbnail-placeholder">${ext.toUpperCase()}</div>`;
         if (file.type.startsWith('image/')) {
             const url = URL.createObjectURL(file);
             this.thumbnailUrls.push(url);
@@ -270,7 +285,10 @@ class PDFCreatorApp {
                 ${thumbnailHtml}
                 <div class="file-info">
                     <div class="file-name">${this.escapeHtml(file.name)}</div>
-                    <div class="file-meta">${size}</div>
+                    <div class="file-meta">
+                        <span class="file-badge ${badge.cls}">${badge.text}</span>
+                        <span class="size">${size}</span>
+                    </div>
                 </div>
                 <div class="file-actions">
                     <button class="move-up" data-index="${index}" aria-label="Move up" ${index === 0 ? 'disabled' : ''}>
@@ -287,14 +305,6 @@ class PDFCreatorApp {
         `;
     }
 
-    /**
-     * These handlers previously read e.target.dataset.index. Since each
-     * button contains a nested <svg> icon, tapping the icon itself made
-     * e.target the SVG (with no dataset.index), producing NaN and
-     * silently acting on index 0 regardless of which row was tapped.
-     * e.currentTarget is always the button the listener is attached to,
-     * so it's correct no matter what nested element the tap actually hit.
-     */
     attachFileItemListeners() {
         this.fileItems.querySelectorAll('.remove-file').forEach((btn) => {
             btn.addEventListener('click', (e) => {
@@ -340,14 +350,14 @@ class PDFCreatorApp {
                 this.dropZone.style.display = 'block';
                 this.fileList.style.display = this.files.length > 0 ? 'block' : 'none';
                 this.settings.style.display = 'none';
-                // Restore the real file list content in case History
-                // overwrote fileItems.innerHTML.
                 this.renderFileItemsContent();
                 break;
             case 'settings':
+                // Always show settings on this tab, regardless of
+                // whether any files have been added yet.
                 this.dropZone.style.display = 'none';
                 this.fileList.style.display = 'none';
-                this.settings.style.display = this.files.length > 0 ? 'block' : 'none';
+                this.settings.style.display = 'block';
                 break;
             case 'history':
                 this.dropZone.style.display = 'none';
@@ -364,16 +374,18 @@ class PDFCreatorApp {
         if (history.length === 0) {
             this.fileItems.innerHTML = '<div class="file-item"><div class="file-info"><div class="file-name">No history yet</div></div></div>';
             this.fileCount.textContent = 0;
+            this.fileListTotal.textContent = '';
             return;
         }
 
         this.fileCount.textContent = history.length;
+        this.fileListTotal.textContent = '';
         this.fileItems.innerHTML = history.map((entry) => `
             <div class="file-item">
                 <div class="file-thumbnail-placeholder">PDF</div>
                 <div class="file-info">
                     <div class="file-name">${this.escapeHtml(entry.name)}</div>
-                    <div class="file-meta">${entry.files} file(s) · ${this.formatFileSize(entry.size)} · ${new Date(entry.date).toLocaleDateString()}</div>
+                    <div class="file-meta"><span class="size">${entry.files} file(s) · ${this.formatFileSize(entry.size)} · ${new Date(entry.date).toLocaleDateString()}</span></div>
                 </div>
             </div>
         `).join('');
@@ -384,13 +396,15 @@ class PDFCreatorApp {
 
         this.progressOverlay.style.display = 'flex';
         this.progressFill.style.width = '0%';
+        this.progressLog.innerHTML = '';
         this.cancelled = false;
 
         try {
-            const pdfBytes = await this.pdfEngine.createPDF(this.files, (percent, message) => {
+            const { pdfBytes, results } = await this.pdfEngine.createPDF(this.files, (percent, message, logEntry) => {
                 if (this.cancelled) throw new Error('Cancelled');
                 this.progressFill.style.width = `${percent}%`;
                 this.progressMessage.textContent = message;
+                if (logEntry) this.appendLogLine(logEntry);
             });
 
             if (this.cancelled) return;
@@ -402,8 +416,8 @@ class PDFCreatorApp {
             this.saveToHistory();
 
             this.progressOverlay.style.display = 'none';
+            this.renderReport(results);
             this.resultSection.style.display = 'block';
-            this.resultMessage.textContent = `${this.files.length} file(s) combined · ${this.formatFileSize(this.currentPDF.size)}`;
         } catch (error) {
             this.progressOverlay.style.display = 'none';
             if (error.message !== 'Cancelled') {
@@ -413,17 +427,36 @@ class PDFCreatorApp {
         }
     }
 
+    appendLogLine(entry) {
+        const line = document.createElement('div');
+        line.className = 'log-line' + (entry.ok ? '' : ' log-fail');
+        line.innerHTML = `
+            <span class="log-name">${this.escapeHtml(entry.name)}</span>
+            <span class="log-status">${entry.ok ? '✓' : '✕'}</span>
+        `;
+        this.progressLog.appendChild(line);
+        this.progressLog.scrollTop = this.progressLog.scrollHeight;
+    }
+
+    renderReport(results) {
+        const totalIn = results.reduce((sum, r) => sum + r.size, 0);
+        this.reportInputCount.textContent = results.length;
+        this.reportInputSize.textContent = this.formatFileSize(totalIn);
+        this.reportOutputSize.textContent = this.formatFileSize(this.currentPDF.size);
+
+        this.reportList.innerHTML = results.map((r) => `
+            <div class="report-row${r.ok ? '' : ' failed'}">
+                <span class="name">${this.escapeHtml(r.name)}</span>
+                <span class="detail">${this.escapeHtml(r.label)}</span>
+            </div>
+        `).join('');
+    }
+
     cancelCreation() {
         this.cancelled = true;
         this.progressOverlay.style.display = 'none';
     }
 
-    /**
-     * Sanitizes the document title into a safe filename and guarantees a
-     * .pdf extension. Previously downloadPDF/saveToHistory/sharePDF each
-     * used this.docTitle.value directly with no extension check, so a
-     * title like "My Notes" downloaded as a file with no .pdf suffix.
-     */
     getOutputFilename() {
         let name = (this.docTitle.value || 'document').trim();
         name = name.replace(/[^a-zA-Z0-9._ -]/g, '_').replace(/_+/g, '_') || 'document';
@@ -468,7 +501,6 @@ class PDFCreatorApp {
             }
         }
 
-        // Fallback: just download it
         this.downloadPDF();
     }
 
