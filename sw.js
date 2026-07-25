@@ -1,4 +1,4 @@
-const CACHE_NAME = 'pdf-creator-v2';
+const CACHE_NAME = 'pdf-creator-v3';
 
 // All paths are relative to this file's own location, so this works
 // correctly whether the app is served from a domain root or from a
@@ -40,28 +40,25 @@ self.addEventListener('activate', (event) => {
     );
 });
 
-// Fetch strategy: Cache first, then network
+// Fetch strategy: Network first, cache as fallback (for offline use).
+// A cache-first strategy was here before, which meant once a file was
+// cached, updates deployed later were never picked up - the browser
+// would keep serving the old version forever. Network-first fixes
+// that: online, you always get what's actually deployed; offline, it
+// falls back to whatever was last cached.
 self.addEventListener('fetch', (event) => {
     if (event.request.method !== 'GET') return;
 
     event.respondWith(
-        caches.match(event.request)
-            .then((cachedResponse) => {
-                if (cachedResponse) {
-                    return cachedResponse;
+        fetch(event.request)
+            .then((response) => {
+                if (response && response.status === 200) {
+                    const responseClone = response.clone();
+                    caches.open(CACHE_NAME)
+                        .then((cache) => cache.put(event.request, responseClone));
                 }
-
-                return fetch(event.request)
-                    .then((response) => {
-                        // Cache successful responses
-                        if (response && response.status === 200) {
-                            const responseClone = response.clone();
-                            caches.open(CACHE_NAME)
-                                .then((cache) => cache.put(event.request, responseClone));
-                        }
-                        return response;
-                    })
-                    .catch(() => cachedResponse);
+                return response;
             })
+            .catch(() => caches.match(event.request))
     );
 });
