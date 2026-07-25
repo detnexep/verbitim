@@ -877,6 +877,15 @@ input:checked + .toggle-slider:before {
     backdrop-filter: blur(2px);
 }
 
+/* .drawer sets display:flex unconditionally below, which otherwise
+   beats the browser's default [hidden] -> display:none rule at equal
+   specificity. This makes the hidden attribute (toggled by JS to open
+   or close the drawer) actually take effect. */
+.drawer[hidden],
+.drawer-overlay[hidden] {
+    display: none;
+}
+
 .drawer {
     position: fixed;
     top: 0; left: 0; bottom: 0;
